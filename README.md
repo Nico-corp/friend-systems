@@ -13,13 +13,11 @@ The memory architecture that makes an agent actually work across sessions.
 
 | File | What it does |
 |------|-------------|
-| `polar_compress.py` | Compresses daily memory logs using PolarQuant-inspired pairing — pairs related entries, distills into single principles. 23% reduction on first run. |
+| `polar_compress.py` | Compresses daily memory logs using PolarQuant-inspired pairing. 23% reduction on first run. |
 | `log_correction.py` | Logs partner corrections immediately to `corrections.jsonl` with category + context. |
-| `promote_corrections.py` | Weekly scan: any correction at count ≥ 3 auto-promotes to permanent memory. |
+| `promote_corrections.py` | Weekly scan: any correction at count ≥ 3 auto-promotes to permanent memory. Now also promotes observations. |
 | `daily_memory_sync.py` | Pulls all `## MEMORY_UPDATE` sections from yesterday's daily log → merges into working memory. |
-| `memory_freshness.py` | Checks staleness of memory files, flags if working state is >24h old. |
-| `task_queue.py` | Async task queue — queue a task, it runs during idle windows. |
-| `self_eval.py` | Self-evaluation framework — structured scoring of outputs before delivery. |
+| `observations.md` | Silent pattern log — Friend appends codebase/workflow patterns during normal work. Auto-promoted at 3+ repeats. |
 
 ### `twitter-tools/`
 Tools for posting, reading, and engaging on X as an agent.
@@ -27,21 +25,21 @@ Tools for posting, reading, and engaging on X as an agent.
 | File | What it does |
 |------|-------------|
 | `post.py` | Standalone tweet posting via OAuth 1.0a API. |
-| `twitter_read.py` | Read any tweet or X Article by URL or ID — bearer token fast path + Playwright for articles. |
+| `twitter_read.py` | Read any tweet or X Article by URL or ID. |
 | `browser_post.py` | Replies + follows via browser automation (Playwright + cookie injection). |
 | `engagement_engine.py` | Scans signal accounts, surfaces high-value engagement opportunities. |
 
-### `options-systems/`
-Infrastructure for systematic options trading. Regime-aware, defined-risk always.
+### `autoresearch/`
+Framework-wide Karpathy Loop — autonomous overnight improvement runner.
 
 | File | What it does |
 |------|-------------|
-| `regime_adaptation.py` | VIX-based regime detection with hysteresis (BULL/NEUTRAL/BEAR/EXTREME BEAR). |
-| `governance.py` | Hard gates: max position size, max deployed capital, daily loss halt, drawdown kill switch. |
-| `execution_discipline.py` | Pre/post entry validators — checks regime, capital, spread width before any order. |
-| `conviction_calibrator.py` | G4.5 Spearman rank-order test — calibrates signal conviction against outcomes (triggers at 50 trades). |
-| `capital_recycler.py` | Tracks capital queue, recycles closed position capital back into the deployment pool. |
-| `signal_validation_engine.py` | Logs every scanner signal + outcome for conviction calibration. |
+| `loop.py` | Generic runner. Pass `--domain <name> --max-experiments N`. Proposes changes, scores them, commits if better, reverts if not. |
+| `domains/options/` | Options strategy param tuning. Score = win_rate × 0.6 + avg_pnl × 0.4. |
+| `domains/sds/` | SDS scoring weight optimization. Score = avg across 10 sample parcels. |
+| `domains/brief/` | Daily brief structure tuning. Score = completeness + density. |
+
+Add a new domain: create a folder with `program.md` (research direction) + `eval.py` (locked scorer) + `target.py` (editable constants). That's it.
 
 ---
 
@@ -56,6 +54,7 @@ Key principles:
 - Source gates before every data claim
 - Self-correction loop with auto-graduation
 - Branch-first code, human review gate
+- Framework-wide design: every capability pluggable across all domains
 - Isolated crons, hard kill switches
 
 ---
