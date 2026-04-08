@@ -1,0 +1,12 @@
+# TraydGate multi-agent system
+claude-agent-sdk
+anyio
+
+# Twitter tools
+requests
+requests-oauthlib
+playwright
+
+# Used conditionally in twitter-tools
+anthropic
+pycryptodome
