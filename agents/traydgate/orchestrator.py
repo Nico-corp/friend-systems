@@ -1,7 +1,8 @@
 """
-TraydGate Orchestrator — runs the NEXUS → PRISM → BUILDER pipeline.
+TraydGate Orchestrator — spawns NEXUS and PRISM as subagents via the Claude Agent SDK.
 
 Enforces the flow: research never reaches BUILDER without passing through PRISM.
+NEXUS output → Telegram Research channel → PRISM processing → Telegram PM channel → BUILDER
 
 Usage:
     python -m agents.traydgate.orchestrator --topic "tenant screening automation"
@@ -9,82 +10,68 @@ Usage:
     python -m agents.traydgate.orchestrator --competitor AppFolio
 """
 import argparse
-import datetime
-import json
-import os
-import sys
 
-from agents.traydgate.nexus import research, market_scan, competitor_analysis
-from agents.traydgate.prism import process_research
-from agents.traydgate.telegram import send_to_prism
+import anyio
+from claude_agent_sdk import (
+    ClaudeSDKClient,
+    ClaudeAgentOptions,
+    AssistantMessage,
+    ResultMessage,
+    TextBlock,
+)
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-LOGS_DIR = os.path.join(REPO_ROOT, "agents", "traydgate", "logs")
-os.makedirs(LOGS_DIR, exist_ok=True)
+from agents.traydgate.nexus import NEXUS_AGENT
+from agents.traydgate.prism import PRISM_AGENT
+from agents.traydgate.telegram import telegram_mcp_server
 
+SYSTEM_PROMPT = """\
+You are the TraydGate orchestrator. You manage a strict two-agent pipeline for \
+building a property management SaaS platform.
 
-def _log(entry: dict):
-    date_str = datetime.date.today().isoformat()
-    log_path = os.path.join(LOGS_DIR, f"orchestrator_{date_str}.jsonl")
-    with open(log_path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+## Agents
+- **nexus**: Research agent. Spawns via the Agent tool. Returns deep research on \
+property management SaaS topics.
+- **prism**: PM agent. Spawns via the Agent tool. Translates research into \
+buildable specs for BUILDER (Friend).
 
+## Pipeline (execute in this exact order)
+1. Spawn the **nexus** agent with the research topic. Wait for its full output.
+2. Post the NEXUS output to Telegram using the **send_to_nexus_channel** tool.
+3. Spawn the **prism** agent, passing it the complete NEXUS output. Ask it to \
+produce actionable specs.
+4. Post the PRISM spec output to Telegram using the **send_to_prism_channel** tool.
+5. Summarize what was produced.
 
-def run_pipeline(nexus_fn, nexus_label: str, **nexus_kwargs) -> dict:
-    """Execute the full NEXUS → PRISM pipeline.
-
-    1. NEXUS produces research (and posts to its Telegram channel)
-    2. PRISM processes the research into specs (and posts to its channel)
-    3. Orchestrator logs the run
-
-    BUILDER (Friend) reads specs from the PRISM channel only.
-    Research never bypasses PRISM.
-    """
-    timestamp = datetime.datetime.utcnow().isoformat() + "Z"
-    print(f"[{timestamp}] Starting pipeline: {nexus_label}")
-
-    # Step 1: NEXUS researches
-    print("  [NEXUS] Researching...")
-    nexus_output = nexus_fn(**nexus_kwargs)
-    print(f"  [NEXUS] Done. Output length: {len(nexus_output)} chars")
-
-    # Step 2: PRISM processes — the mandatory bottleneck
-    print("  [PRISM] Processing research into specs...")
-    prism_output = process_research(nexus_output)
-    print(f"  [PRISM] Done. Spec length: {len(prism_output)} chars")
-
-    # Step 3: Log the run
-    entry = {
-        "timestamp": timestamp,
-        "pipeline": nexus_label,
-        "nexus_output_len": len(nexus_output),
-        "prism_output_len": len(prism_output),
-        "status": "complete",
-    }
-    _log(entry)
-
-    print(f"  [ORCHESTRATOR] Pipeline complete. Spec posted to PRISM channel.")
-    print(f"  [ORCHESTRATOR] BUILDER picks up from PRISM channel only.\n")
-
-    return {
-        "nexus_output": nexus_output,
-        "prism_spec": prism_output,
-    }
+## Hard rules
+- Research NEVER goes directly to BUILDER. PRISM is the mandatory bottleneck.
+- Always post to both Telegram channels — that's the delivery mechanism.
+- Include full context when spawning PRISM. Don't summarize the NEXUS output; \
+pass it verbatim so PRISM has everything."""
 
 
-def topic_pipeline(topic: str) -> dict:
-    """Research a specific topic end-to-end."""
-    return run_pipeline(research, f"topic: {topic}", topic=topic)
+async def run_pipeline(prompt: str):
+    """Run the NEXUS → PRISM pipeline for a given prompt."""
+    options = ClaudeAgentOptions(
+        allowed_tools=["Agent"],
+        agents={
+            "nexus": NEXUS_AGENT,
+            "prism": PRISM_AGENT,
+        },
+        mcp_servers={"telegram": telegram_mcp_server},
+        system_prompt=SYSTEM_PROMPT,
+        max_turns=20,
+    )
 
-
-def scan_pipeline() -> dict:
-    """Run a full market scan end-to-end."""
-    return run_pipeline(market_scan, "market_scan")
-
-
-def competitor_pipeline(competitor: str) -> dict:
-    """Run a competitor analysis end-to-end."""
-    return run_pipeline(competitor_analysis, f"competitor: {competitor}", competitor=competitor)
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(prompt)
+        async for message in client.receive_response():
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        print(block.text)
+            elif isinstance(message, ResultMessage):
+                if message.result:
+                    print(f"\n=== Pipeline complete ===\n{message.result}")
 
 
 def main():
@@ -96,14 +83,24 @@ def main():
     args = parser.parse_args()
 
     if args.topic:
-        result = topic_pipeline(args.topic)
+        prompt = (
+            f"Research the following topic in the property management SaaS space, "
+            f"then produce specs:\n\n{args.topic}"
+        )
     elif args.scan:
-        result = scan_pipeline()
-    elif args.competitor:
-        result = competitor_pipeline(args.competitor)
+        prompt = (
+            "Run a broad market scan of the property management SaaS landscape. "
+            "Cover: top players, emerging startups, feature trends, pricing shifts, "
+            "and gaps. Then produce specs for the most promising opportunities."
+        )
+    else:
+        prompt = (
+            f"Deep analysis of {args.competitor} as a property management SaaS platform. "
+            f"Cover: core features, pricing, target market, strengths, weaknesses, "
+            f"and what TraydGate could learn or exploit. Then produce specs."
+        )
 
-    print("=== PRISM SPEC (for BUILDER) ===")
-    print(result["prism_spec"])
+    anyio.run(run_pipeline, prompt)
 
 
 if __name__ == "__main__":
